@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Онлайн-запись</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f2f2f5);
+    --text: var(--tg-theme-text-color, #111111);
+    --hint: var(--tg-theme-hint-color, #8a8a8e);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --card: var(--tg-theme-section-bg-color, var(--bg));
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg2); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding-bottom: 96px;
+  }
+  header { padding: 20px 16px 8px; }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; color: var(--hint); font-size: 13px; }
+  section { margin: 12px 12px 0; background: var(--card); border-radius: 14px; padding: 14px; }
+  section.hidden { display: none; }
+  h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint); font-weight: 600; }
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .item {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 12px; border-radius: 12px; background: var(--bg2); cursor: pointer;
+    border: 2px solid transparent; transition: border-color .15s;
+  }
+  .item.sel { border-color: var(--accent); }
+  .item .t { font-weight: 600; }
+  .item .s { color: var(--hint); font-size: 13px; }
+  .item .p { font-weight: 600; white-space: nowrap; }
+  .avatar {
+    width: 40px; height: 40px; border-radius: 50%; flex: none; display: grid; place-items: center;
+    background: var(--accent); color: var(--accent-text); font-weight: 700;
+  }
+  .row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .days { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+  .days::-webkit-scrollbar { display: none; }
+  .day {
+    flex: none; width: 58px; padding: 8px 0; text-align: center; border-radius: 12px;
+    background: var(--bg2); cursor: pointer; border: 2px solid transparent;
+  }
+  .day .w { font-size: 12px; color: var(--hint); }
+  .day .d { font-size: 18px; font-weight: 700; }
+  .day.sel { background: var(--accent); color: var(--accent-text); }
+  .day.sel .w { color: var(--accent-text); opacity: .8; }
+  .day.off { opacity: .35; pointer-events: none; }
+  .times { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .time {
+    padding: 10px 0; text-align: center; border-radius: 10px; background: var(--bg2);
+    cursor: pointer; font-weight: 600;
+  }
+  .time.sel { background: var(--accent); color: var(--accent-text); }
+  .empty { color: var(--hint); text-align: center; padding: 8px 0; }
+  #fallback {
+    position: fixed; left: 12px; right: 12px; bottom: 16px; padding: 14px; border: 0; border-radius: 12px;
+    background: var(--accent); color: var(--accent-text); font-size: 16px; font-weight: 600; display: none;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Онлайн-запись</h1>
+  <p id="addr"></p>
+</header>
+
+<section id="sec-service"><h2>1. Услуга</h2><div class="list" id="services"></div></section>
+<section id="sec-master" class="hidden"><h2>2. Мастер</h2><div class="list" id="masters"></div></section>
+<section id="sec-day" class="hidden"><h2>3. День</h2><div class="days" id="days"></div></section>
+<section id="sec-time" class="hidden"><h2>4. Время</h2><div class="times" id="times"></div></section>
+
+<button id="fallback"></button>
+
+<script>
+const tg = window.Telegram && Telegram.WebApp;
+const WD = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+const MON = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+
+// Данные приходят от бота в параметре ?d= (base64url JSON)
+function readData() {
+  const raw = new URLSearchParams(location.search).get("d");
+  if (!raw) return null;
+  const b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64 + "===".slice((b64.length + 3) % 4));
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))));
+}
+const D = readData();
+const state = { s: null, m: null, day: null, t: null };
+
+// Время считаем в «местных минутах заведения» (UTC + смещение), как в боте
+const nowLocal = () => Math.floor(Date.now() / 60000) + D.tz * 60;
+const dayStart = min => Math.floor(min / 1440) * 1440;
+const asDate = min => new Date(min * 60000);           // читаем через getUTC*
+const pad = n => String(n).padStart(2, "0");
+const hhmm = min => pad(Math.floor((min % 1440) / 60)) + ":" + pad(min % 60);
+const iso = min => { const d = asDate(min); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${hhmm(min)}`; };
+
+function freeSlots(masterId, day, dur) {
+  const busy = D.b[masterId] || [];
+  const earliest = nowLocal() + D.lead;
+  const out = [];
+  for (let t = day + D.o * 60; t + dur <= day + D.c * 60; t += D.step) {
+    if (t < earliest) continue;
+    if (busy.every(([bs, bd]) => !(t < bs + bd && bs < t + dur))) out.push(t);
+  }
+  return out;
+}
+
+function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function show(id, on) { document.getElementById(id).classList.toggle("hidden", !on); }
+function haptic() { try { tg.HapticFeedback.selectionChanged(); } catch (e) {} }
+
+function renderServices() {
+  const box = document.getElementById("services"); box.innerHTML = "";
+  D.s.forEach(([id, name, price, dur]) => {
+    const it = el("div", "item" + (state.s === id ? " sel" : ""),
+      `<div><div class="t">${esc(name)}</div><div class="s">${dur} мин</div></div><div class="p">${price} ₽</div>`);
+    it.onclick = () => { haptic(); state.s = id; state.day = state.t = null; renderAll(); scrollTo("sec-master"); };
+    box.appendChild(it);
+  });
+}
+
+function renderMasters() {
+  const box = document.getElementById("masters"); box.innerHTML = "";
+  D.m.forEach(([id, name, about]) => {
+    const it = el("div", "item" + (state.m === id ? " sel" : ""),
+      `<div class="row"><div class="avatar">${esc(name[0])}</div><div><div class="t">${esc(name)}</div><div class="s">${esc(about)}</div></div></div>`);
+    it.onclick = () => { haptic(); state.m = id; state.day = state.t = null; renderAll(); scrollTo("sec-day"); };
+    box.appendChild(it);
+  });
+}
+
+function dur() { return D.s.find(s => s[0] === state.s)[3]; }
+
+function renderDays() {
+  const box = document.getElementById("days"); box.innerHTML = "";
+  const today = dayStart(nowLocal());
+  let firstFree = null;
+  for (let i = 0; i < D.days; i++) {
+    const day = today + i * 1440, d = asDate(day);
+    const off = D.off.includes((d.getUTCDay() + 6) % 7) || freeSlots(state.m, day, dur()).length === 0;
+    if (!off && firstFree === null) firstFree = day;
+    const label = i === 0 ? "Сег" : i === 1 ? "Завт" : WD[d.getUTCDay()];
+    const it = el("div", "day" + (off ? " off" : "") + (state.day === day ? " sel" : ""),
+      `<div class="w">${label}</div><div class="d">${d.getUTCDate()}</div><div class="w">${MON[d.getUTCMonth()]}</div>`);
+    it.onclick = () => { haptic(); state.day = day; state.t = null; renderAll(); scrollTo("sec-time"); };
+    box.appendChild(it);
+  }
+  if (state.day === null && firstFree !== null) state.day = firstFree;
+}
+
+function renderTimes() {
+  const box = document.getElementById("times"); box.innerHTML = "";
+  const slots = freeSlots(state.m, state.day, dur());
+  if (!slots.length) { box.appendChild(el("div", "empty", "Свободного времени нет")); return; }
+  slots.forEach(t => {
+    const it = el("div", "time" + (state.t === t ? " sel" : ""), hhmm(t));
+    it.onclick = () => { haptic(); state.t = t; renderAll(); };
+    box.appendChild(it);
+  });
+}
+
+function renderAll() {
+  renderServices();
+  show("sec-master", !!state.s); if (state.s) renderMasters();
+  show("sec-day", !!(state.s && state.m)); if (state.s && state.m) renderDays();
+  show("sec-time", state.day !== null && !!state.m); if (state.day !== null && state.m) renderTimes();
+  updateButton();
+}
+
+function scrollTo(id) { setTimeout(() => document.getElementById(id).scrollIntoView({ behavior: "smooth", block: "start" }), 50); }
+
+function buttonText() {
+  const d = asDate(state.t);
+  return `Записаться · ${WD[d.getUTCDay()]} ${d.getUTCDate()} ${MON[d.getUTCMonth()]}, ${hhmm(state.t)}`;
+}
+
+function submit() {
+  if (state.t === null) return;
+  const payload = JSON.stringify({ s: state.s, m: state.m, t: iso(state.t) });
+  if (tg && tg.sendData) tg.sendData(payload); // окно закроется, бот получит данные
+}
+
+const fb = document.getElementById("fallback");
+fb.onclick = submit;
+function updateButton() {
+  const ready = state.t !== null;
+  if (tg && tg.platform && tg.platform !== "unknown" && tg.MainButton) {  // открыто внутри Telegram
+    if (ready) { tg.MainButton.setText(buttonText()); tg.MainButton.show(); } else tg.MainButton.hide();
+  } else {
+    fb.style.display = ready ? "block" : "none"; if (ready) fb.textContent = buttonText();
+  }
+}
+
+if (tg) { tg.ready(); tg.expand(); tg.MainButton && tg.MainButton.onClick(submit); }
+if (!D) {
+  document.body.innerHTML = '<header><h1>Откройте запись через бота</h1><p>Эта страница работает внутри Telegram.</p></header>';
+} else {
+  document.getElementById("title").textContent = D.n;
+  document.getElementById("addr").textContent = D.a;
+  document.title = D.n;
+  renderAll();
+}
+</script>
+</body>
+</html>
